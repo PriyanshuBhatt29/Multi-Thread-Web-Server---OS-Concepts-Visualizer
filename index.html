@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Multi-Threaded Web Server | OS Visualization</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    .inter-font { font-family: 'Inter', sans-serif; }
+    body {
+      background: linear-gradient(135deg, rgba(99,102,241,0.1), rgba(236,72,153,0.1));
+    }
+  </style>
+</head>
+<body class="inter-font min-h-screen p-4">
+  <div class="max-w-5xl mx-auto">
+    <header class="text-center py-8">
+      <h1 class="text-4xl font-extrabold text-indigo-700 drop-shadow-md">Multi-Threaded Web Server</h1>
+      <p class="text-gray-700 mt-2 font-medium">Interactive OS Concepts Visualization (Threads, Semaphore, Mutex, Scheduling)</p>
+      <p class="mt-4 text-xl font-bold text-pink-600">Team: CYBER SHADOWS</p>
+    </header>
+
+    <!-- Controls -->
+    <div class="bg-white/80 backdrop-blur-md p-6 rounded-xl shadow-lg">
+      <h2 class="text-xl font-semibold text-gray-800 mb-4">Simulate Concurrent Requests</h2>
+      <div class="flex flex-col sm:flex-row gap-4">
+        <input type="number" id="requestCount" value="5" min="1" max="10"
+          class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+          placeholder="Number of concurrent requests">
+        <select id="schedulingMode" class="p-3 border border-gray-300 rounded-lg">
+          <option value="FIFO">FIFO</option>
+          <option value="RR">Round Robin</option>
+          <option value="PRIORITY">Priority</option>
+        </select>
+        <button id="sendRequestsBtn"
+          class="px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 transition duration-150 shadow-md flex items-center justify-center disabled:opacity-50">
+          <svg id="spinner" class="animate-spin -ml-1 mr-3 h-5 w-5 text-white hidden"
+            xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+            </path>
+          </svg>
+          <span>Start</span>
+        </button>
+      </div>
+      <p id="statusMessage" class="mt-4 text-sm text-indigo-600 font-medium"></p>
+    </div>
+
+    <!-- OS Concepts Dashboard -->
+    <div class="mt-10 bg-white/80 backdrop-blur-md p-6 rounded-xl shadow-md">
+      <h2 class="text-2xl font-bold text-indigo-700 mb-4">OS Concepts Involved</h2>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
+        <div class="p-4 bg-blue-50 rounded-lg"><h3 class="font-semibold text-blue-700">Threads</h3><p class="text-sm text-gray-600">Parallel handling of requests.</p></div>
+        <div class="p-4 bg-green-50 rounded-lg"><h3 class="font-semibold text-green-700">Semaphore</h3><p class="text-sm text-gray-600">Limits simultaneous workers.</p></div>
+        <div class="p-4 bg-yellow-50 rounded-lg"><h3 class="font-semibold text-yellow-700">Mutex (Lock)</h3><p class="text-sm text-gray-600">Prevents race in shared counter.</p></div>
+        <div class="p-4 bg-pink-50 rounded-lg"><h3 class="font-semibold text-pink-700">Scheduling</h3><p class="text-sm text-gray-600">Manages request order (FIFO/RR/Priority).</p></div>
+      </div>
+    </div>
+
+    <!-- Results Display -->
+    <div class="mt-10">
+      <h2 class="text-2xl font-bold text-gray-800 mb-4">Live Request Log</h2>
+      <div id="resultsContainer" class="space-y-4"></div>
+    </div>
+
+    <!-- Chart -->
+    <div class="mt-10 bg-white/80 backdrop-blur-md p-6 rounded-xl shadow-lg">
+      <h2 class="text-2xl font-bold text-indigo-700 mb-4">Average Response Time Comparison</h2>
+      <canvas id="performanceChart"></canvas>
+      <div id="bestTechnique" class="mt-6 text-center text-lg font-semibold text-green-700 hidden"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = 'http://127.0.0.1:8081/';
+    const resultsContainer = document.getElementById('resultsContainer');
+    const sendRequestsBtn = document.getElementById('sendRequestsBtn');
+    const requestCountInput = document.getElementById('requestCount');
+    const statusMessage = document.getElementById('statusMessage');
+    const spinner = document.getElementById('spinner');
+    const schedulingMode = document.getElementById('schedulingMode');
+    const bestTechniqueEl = document.getElementById('bestTechnique');
+
+    let clientRequestCounter = 0;
+    let chartInstance;
+    let averages = { FIFO: null, RR: null, PRIORITY: null };
+
+    function createLogCard(id, status, data = null) {
+      const card = document.createElement('div');
+      card.id = `request-${id}`;
+      card.className = 'p-4 rounded-lg border transition duration-300';
+
+      if (status === 'SENT') {
+        card.classList.add('bg-yellow-50', 'border-yellow-300');
+        card.innerHTML = `<p class="font-medium text-yellow-800">Request #${id} SENT.</p>`;
+      } else if (status === 'RECEIVED' && data) {
+        card.classList.add('bg-green-50', 'border-green-300');
+        card.innerHTML = `
+          <p class="font-bold text-green-800">Request #${id} COMPLETE!</p>
+          <div class="mt-2 text-sm text-gray-700 space-y-1">
+              <p><strong>Thread:</strong> ${data.thread_name}</p>
+              <p><strong>Scheduling:</strong> ${data.scheduling_mode}</p>
+              <p>Queue Wait: <strong>${data.queue_wait_time}s</strong></p>
+              <p>Processing: <strong>${data.processing_time}s</strong></p>
+              <p>Total: <strong>${data.total_time}s</strong></p>
+              <div class="w-full bg-gray-200 rounded-full h-3 mt-2">
+                <div class="bg-blue-500 h-3 rounded-full" style="width:${(data.queue_wait_time / data.total_time) * 100}%"></div>
+              </div>
+              <p class="text-xs text-gray-500 mt-1">Blue = Queue wait, remaining = Processing</p>
+          </div>
+        `;
+      } else if (status === 'ERROR') {
+        card.classList.add('bg-red-50', 'border-red-300');
+        card.innerHTML = `<p class="font-bold text-red-800">Request #${id} FAILED!</p>`;
+      }
+
+      resultsContainer.prepend(card);
+    }
+
+    async function sendRequest(id) {
+      createLogCard(id, 'SENT');
+      try {
+        const response = await fetch(API_URL);
+        const data = await response.json();
+        const old = document.getElementById(`request-${id}`);
+        if (old) old.remove();
+        createLogCard(id, 'RECEIVED', data);
+        return data.total_time;
+      } catch {
+        createLogCard(id, 'ERROR', { message: "Server not responding" });
+        return null;
+      }
+    }
+
+    async function handleSendRequests() {
+      const count = parseInt(requestCountInput.value);
+      const mode = schedulingMode.value;
+      if (isNaN(count) || count < 1) return;
+
+      sendRequestsBtn.disabled = true;
+      spinner.classList.remove('hidden');
+      resultsContainer.innerHTML = '';
+      bestTechniqueEl.classList.add('hidden');
+      statusMessage.textContent = `Mode: ${mode} | Sending ${count} concurrent requests...`;
+
+      await fetch(`${API_URL}setmode?mode=${mode}`);
+      const promises = [];
+      for (let i = 0; i < count; i++) {
+        clientRequestCounter++;
+        promises.push(sendRequest(clientRequestCounter));
+      }
+
+      const results = await Promise.all(promises);
+      const valid = results.filter(r => r !== null);
+      const avg = valid.reduce((a, b) => a + b, 0) / valid.length;
+      averages[mode] = avg.toFixed(2);
+
+      updateChart();
+
+      sendRequestsBtn.disabled = false;
+      spinner.classList.add('hidden');
+      statusMessage.textContent = `All ${count} requests processed.`;
+
+      checkBestTechnique();
+    }
+
+    function updateChart() {
+      const labels = ['FIFO', 'RR', 'PRIORITY'];
+      const data = labels.map(l => averages[l] || 0);
+      if (!chartInstance) {
+        chartInstance = new Chart(document.getElementById('performanceChart'), {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [{
+              label: 'Avg Response Time (s)',
+              data,
+              backgroundColor: ['#6366F1', '#10B981', '#F59E0B']
+            }]
+          },
+          options: { scales: { y: { beginAtZero: true } } }
+        });
+      } else {
+        chartInstance.data.datasets[0].data = data;
+        chartInstance.update();
+      }
+    }
+
+    function checkBestTechnique() {
+      if (averages.FIFO && averages.RR && averages.PRIORITY) {
+        const best = Object.entries(averages).sort((a, b) => a[1] - b[1])[0];
+        bestTechniqueEl.textContent = `🏆 Best Scheduling Technique: ${best[0]} (Avg Response: ${best[1]}s)`;
+        bestTechniqueEl.classList.remove('hidden');
+      }
+    }
+
+    sendRequestsBtn.addEventListener('click', handleSendRequests);
+  </script>
+</body>
+</html>
